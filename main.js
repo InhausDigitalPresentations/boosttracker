@@ -62,6 +62,23 @@
     return !!document.querySelector('.modal-overlay:not(.hidden)');
   }
 
+  // ---- top loading bar (feedback for the Sheet round-trip on navigation) -------
+  function loadingBarStart() {
+    const bar = document.getElementById('route-loading-bar');
+    if (!bar) return;
+    bar.classList.remove('done');
+    void bar.offsetWidth; // restart the transition if it's already mid-animation
+    bar.classList.add('active');
+  }
+
+  function loadingBarFinish() {
+    const bar = document.getElementById('route-loading-bar');
+    if (!bar) return;
+    bar.classList.remove('active');
+    bar.classList.add('done');
+    setTimeout(() => bar.classList.remove('done'), 500);
+  }
+
   // ---- setup notice (shown when db.js's WEB_APP_URL hasn't been set yet) -------
   function showSetupNotice() {
     document.getElementById('fab-add-boost').style.display = 'none';
@@ -100,13 +117,16 @@
 
     if (opts.skipRefresh !== true) {
       setSyncStatus('pending', 'Syncing…');
+      loadingBarStart();
       try {
         await window.DB.refresh();
       } catch (err) {
+        loadingBarFinish();
         if (err && err.message === 'NOT_CONFIGURED') { showSetupNotice(); return; }
         showConnectionError(err);
         return;
       }
+      loadingBarFinish();
     }
     setSyncStatus('ok', 'Synced ' + timeAgo(window.DB.getLastSyncedAt()));
 

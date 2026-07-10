@@ -55,6 +55,30 @@ table { border-collapse: collapse; width: 100%; }
 input, select, textarea { font-family: inherit; font-size: 14px; }
 
 .hidden { display: none !important; }
+
+/* Thin bar across the very top of the window, shown while a route change
+   is waiting on the Google Sheet round-trip — pure perceived-speed sugar,
+   so a click always feels instantly acknowledged even on a slow network. */
+.route-loading-bar {
+  position: fixed;
+  top: 0; left: 0;
+  height: 3px;
+  width: 0%;
+  background: var(--color-accent);
+  z-index: 500;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.route-loading-bar.active {
+  opacity: 1;
+  width: 70%;
+  transition: width 4s cubic-bezier(0.1, 0.7, 0.3, 0.99), opacity 0.15s ease;
+}
+.route-loading-bar.done {
+  opacity: 0;
+  width: 100%;
+  transition: width 0.2s ease, opacity 0.35s ease 0.1s;
+}
 .text-red { color: var(--color-red); }
 .text-muted { color: var(--color-text-muted); }
 .link-like { cursor: pointer; font-weight: 600; }
