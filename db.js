@@ -38,6 +38,10 @@ window.DB = (function () {
     return sb;
   }
 
+  // auth.js uses the exact same client instance (and therefore the same
+  // logged-in session) rather than creating a second, disconnected one.
+  function getRawClient() { return client(); }
+
   async function unwrap(builder) {
     const { data, error } = await builder;
     if (error) throw new Error(error.message || String(error));
@@ -278,11 +282,18 @@ window.DB = (function () {
       .subscribe();
   }
 
+  function unsubscribeFromChanges() {
+    if (realtimeChannel) {
+      client().removeChannel(realtimeChannel);
+      realtimeChannel = null;
+    }
+  }
+
   // ---- misc ----------------------------------------------------------------------------
   function getCurrentMonth() { return currentMonthStr(); }
 
   return {
-    isConfigured, getLastSyncedAt, subscribeToChanges,
+    isConfigured, getLastSyncedAt, subscribeToChanges, unsubscribeFromChanges, getRawClient,
     getClients, getClient, addClient, updateClient, deleteClient,
     getTeamMembers, addTeamMember, updateTeamMember, deleteTeamMember,
     getBoosts, getBoost, addBoost, updateBoost, deleteBoost,

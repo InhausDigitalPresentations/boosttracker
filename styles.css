@@ -122,6 +122,9 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 
 .sidebar-nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 
+/* nav is only meaningful once someone is actually logged in */
+body:not(.is-authenticated) .sidebar-nav { display: none; }
+
 .nav-item {
   display: flex;
   align-items: center;
@@ -213,6 +216,79 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   font-size: 12.5px;
 }
 .setup-notice ol { color: var(--color-text-secondary); line-height: 1.8; padding-left: 20px; }
+
+/* ==========================================================================
+   ACCOUNT BADGE (sidebar footer)
+   ========================================================================== */
+
+.account-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  margin-bottom: 10px;
+}
+
+.account-email {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   LOGIN / SIGN UP
+   ========================================================================== */
+
+.auth-wrap {
+  min-height: calc(100vh - 72px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 36px 32px;
+  text-align: center;
+}
+
+.auth-logo { height: 46px; width: auto; margin: 0 auto 18px auto; display: block; }
+.auth-title { font-size: 19px; font-weight: 700; margin: 0 0 6px 0; }
+.auth-subtitle { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 20px 0; line-height: 1.5; }
+
+.auth-message {
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  text-align: left;
+}
+.auth-message-error { background: var(--color-red-bg); color: #A5252A; border: 1px solid #F3C6C6; }
+.auth-message-info { background: var(--color-accent-bg); color: #7A1D85; border: 1px solid #F3C2F7; }
+
+.auth-card .form-group { text-align: left; }
+.auth-submit { width: 100%; margin-top: 4px; justify-content: center; }
+
+.auth-toggle {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-top: 18px;
+  cursor: pointer;
+}
+.auth-toggle:hover { color: var(--color-text); text-decoration: underline; }
 
 /* ==========================================================================
    MAIN LAYOUT

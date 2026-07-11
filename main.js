@@ -19,6 +19,16 @@
      - A slow (60s) background poll is kept purely as a safety net in case
        the realtime connection silently drops.
      - The sidebar footer shows sync status + a manual "Refresh now" button.
+
+   Auth:
+     - window.Auth.onAuthStateChange is the single source of truth for
+       whether anyone is logged in. Its first callback (event
+       'INITIAL_SESSION') fires immediately with whatever session already
+       exists (or null), so there's no separate "check session on boot" step.
+     - No session -> LoginView takes over the whole screen and nothing else
+       in this file runs (no routing, no polling, no realtime).
+     - Session appears -> enterApp() starts the router + live sync, same as
+       before auth existed.
    ========================================================================== */
 
 (function () {
@@ -27,6 +37,7 @@
   const REALTIME_DEBOUNCE_MS = 400;
   let pollTimer = null;
   let realtimeDebounceTimer = null;
+  let currentSession = null;
 
   function setActiveNav(routeKey) {
     document.querySelectorAll('.nav-item').forEach((a) => {
@@ -170,12 +181,44 @@
     });
   }
 
-  async function start() {
-    Modals.init();
-    bindSyncButton();
+  // ---- auth: login gate + logout control -----------------------------------------
+  function stopLiveFeatures() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    window.DB.unsubscribeFromChanges();
+  }
 
+  function showLoginView() {
+    stopLiveFeatures();
+    document.getElementById('fab-add-boost').style.display = 'none';
+    window.LoginView.render(appContent);
+  }
+
+  function renderAccountBadge() {
+    const el = document.getElementById('account-badge');
+    if (!el) return;
+    if (currentSession && currentSession.user) {
+      el.innerHTML = `
+        <span class="account-email" title="${Utils.escapeHtml(currentSession.user.email)}">${Utils.escapeHtml(currentSession.user.email)}</span>
+        <button id="logout-btn" class="btn-icon" title="Log out">
+          <svg viewBox="0 0 24 24" fill="none" width="15" height="15"><path d="M15 17l5-5-5-5M20 12H9M12 19H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      `;
+      document.getElementById('logout-btn').addEventListener('click', async () => {
+        try {
+          await window.Auth.signOut();
+          Utils.toast('Signed out');
+        } catch (err) {
+          Utils.toast('Could not sign out — try again');
+        }
+      });
+    } else {
+      el.innerHTML = '';
+    }
+  }
+
+  async function enterApp() {
     window.Router = { rerender: renderRoute };
-    window.addEventListener('hashchange', renderRoute);
+    renderAccountBadge();
 
     if (!window.location.hash || window.location.hash === '#') {
       window.location.hash = '#/dashboard';
@@ -183,8 +226,30 @@
       await renderRoute();
     }
 
-    if (window.DB.isConfigured()) window.DB.subscribeToChanges(onRemoteChange);
+    window.DB.subscribeToChanges(onRemoteChange);
     startSafetyPoll();
+  }
+
+  async function start() {
+    Modals.init();
+    bindSyncButton();
+
+    if (!window.DB.isConfigured()) { showSetupNotice(); return; }
+
+    window.addEventListener('hashchange', () => { if (currentSession) renderRoute(); });
+
+    window.Auth.onAuthStateChange(async (event, session) => {
+      const wasLoggedIn = !!currentSession;
+      currentSession = session;
+      document.body.classList.toggle('is-authenticated', !!session);
+      renderAccountBadge();
+
+      if (session) {
+        if (!wasLoggedIn) await enterApp();
+      } else if (wasLoggedIn || event === 'INITIAL_SESSION') {
+        showLoginView();
+      }
+    });
   }
 
   document.addEventListener('DOMContentLoaded', start);
