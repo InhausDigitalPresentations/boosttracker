@@ -1,151 +1,288 @@
 /* ==========================================================================
-   DB.JS — DATA ACCESS LAYER (Google Sheet backed, via Apps Script Web App)
+   DB.JS — DATA ACCESS LAYER (Supabase Postgres backend)
    ==========================================================================
    Every function here still returns a Promise with the exact same shape as
-   before, so dashboard.js / clientDetail.js / clients.js / archiveView.js /
-   settingsView.js / modals.js do not need to change at all.
+   the local/Sheets versions before it, so dashboard.js / clientDetail.js /
+   clients.js / archiveView.js / settingsView.js / modals.js don't need to
+   change at all.
 
-   How it works:
-     - GET  {WEB_APP_URL}?action=getAll   loads the whole dataset once and
-       caches it in `state`. All the getX() readers below just read that
-       cache synchronously (wrapped in Promise.resolve), so switching pages
-       is instant and doesn't hammer the Apps Script quota.
-     - Every write (add/update/delete/closeMonth) POSTs {action, payload} to
-       the same URL. The Apps Script responds with the FULL fresh state,
-       which replaces the local cache — so the very next screen you look at
-       is already showing what's really in the Sheet.
-     - main.js re-fetches (DB.refresh()) on every route change and on a
-       timer, so a second person's edits show up for everyone else too.
+   Unlike the Google Sheets version, there is no local cache here — every
+   call is a live query straight to Postgres via supabase-js, so the app is
+   always showing what's actually in the database, on every render.
 
-   Setup: deploy Code.gs as a Web App (see SETUP.md), then paste the URL
-   into WEB_APP_URL below.
+   Column names in Postgres are snake_case (idiomatic SQL); the rest of the
+   app works in camelCase. The small *FromRow / *ToRow mapper functions below
+   are the only place that translation happens.
+
+   Setup: create a Supabase project, run supabase_schema.sql once in its SQL
+   Editor, then paste the Project URL + anon key below — see SETUP.md.
    ========================================================================== */
 
 window.DB = (function () {
-  // ⚠️ SET THIS after deploying Code.gs — see SETUP.md.
-  // Deploy > New deployment > Web app > Execute as "Me" > Who has access "Anyone"
-  const WEB_APP_URL = 'https://script.google.com/a/macros/inhaus.ae/s/AKfycbwVLnvuGhK3fOffGWZ6VcKw2nhBIMylJiQT0cCd4Ti-Qj3jyKij89tX6OIu2YymyyDV/exec';
+  // ⚠️ SET THESE after creating your Supabase project — see SETUP.md.
+  // Find them in your project: Settings > API.
+  const SUPABASE_URL = 'PASTE_YOUR_SUPABASE_PROJECT_URL_HERE';
+  const SUPABASE_ANON_KEY = 'PASTE_YOUR_SUPABASE_ANON_KEY_HERE';
 
-  let state = { clients: [], teamMembers: [], boosts: [], archive: [] };
+  let sb = null;
   let lastSyncedAt = null;
+  let realtimeChannel = null;
 
-  function clone(x) { return JSON.parse(JSON.stringify(x)); }
+  function isConfigured() {
+    return SUPABASE_URL.indexOf('PASTE_YOUR') === -1 && SUPABASE_ANON_KEY.indexOf('PASTE_YOUR') === -1;
+  }
+
+  function client() {
+    if (!isConfigured()) throw new Error('NOT_CONFIGURED');
+    if (!sb) sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    return sb;
+  }
+
+  async function unwrap(builder) {
+    const { data, error } = await builder;
+    if (error) throw new Error(error.message || String(error));
+    lastSyncedAt = Date.now();
+    return data;
+  }
+
+  function getLastSyncedAt() { return lastSyncedAt; }
+
   function pad2(n) { return String(n).padStart(2, '0'); }
-
   function currentMonthStr() {
     const now = new Date();
     return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
   }
-
   function nextMonthStr(monthStr) {
     let [y, m] = monthStr.split('-').map(Number);
-    m += 1;
-    if (m > 12) { m = 1; y += 1; }
+    m += 1; if (m > 12) { m = 1; y += 1; }
     return `${y}-${pad2(m)}`;
   }
 
-  function isConfigured() {
-    return !!WEB_APP_URL && WEB_APP_URL.indexOf('PASTE_YOUR') === -1;
+  // ---- row <-> app-object mappers -------------------------------------------
+  function clientFromRow(r) {
+    return {
+      id: r.id,
+      name: r.name,
+      monthlyBudget: Number(r.monthly_budget) || 0,
+      activeMonth: r.active_month,
+      createdAt: r.created_at,
+    };
+  }
+  function clientToInsertRow(data) {
+    return {
+      name: data.name,
+      monthly_budget: Number(data.monthlyBudget) || 0,
+      active_month: currentMonthStr(),
+    };
+  }
+  function clientToUpdateRow(data) {
+    const row = {};
+    if (data.name !== undefined) row.name = data.name;
+    if (data.monthlyBudget !== undefined) row.monthly_budget = Number(data.monthlyBudget) || 0;
+    return row;
   }
 
-  // ---- transport --------------------------------------------------------------
-  async function apiGet() {
-    if (!isConfigured()) throw new Error('NOT_CONFIGURED');
-    const res = await fetch(`${WEB_APP_URL}?action=getAll`, { method: 'GET' });
-    if (!res.ok) throw new Error('Could not reach the Google Sheet backend (HTTP ' + res.status + ')');
-    return res.json();
+  function boostFromRow(r) {
+    return {
+      id: r.id,
+      clientId: r.client_id,
+      month: r.month,
+      platform: r.platform,
+      postLink: r.post_link,
+      objective: r.objective,
+      budget: Number(r.budget) || 0,
+      startDate: r.start_date,
+      duration: Number(r.duration) || 1,
+      endDate: r.end_date,
+      assignedTo: r.assigned_to,
+      status: r.status,
+      priority: r.priority,
+      notes: r.notes || '',
+      createdAt: r.created_at,
+    };
   }
-
-  async function apiPost(action, payload) {
-    if (!isConfigured()) throw new Error('NOT_CONFIGURED');
-    // Content-Type text/plain keeps this a CORS "simple request" — Apps
-    // Script web apps don't implement doOptions, so application/json would
-    // trigger a preflight that fails. Apps Script still parses the JSON
-    // body fine on its end via e.postData.contents.
-    const res = await fetch(WEB_APP_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, payload }),
+  function boostToInsertRow(data) {
+    return {
+      client_id: data.clientId,
+      month: data.month || currentMonthStr(),
+      platform: data.platform,
+      post_link: data.postLink,
+      objective: data.objective,
+      budget: Number(data.budget) || 0,
+      start_date: data.startDate,
+      duration: Number(data.duration) || 1,
+      assigned_to: data.assignedTo,
+      status: data.status || 'To Do',
+      priority: data.priority || 'Normal',
+      notes: data.notes || '',
+    };
+  }
+  const BOOST_FIELD_MAP = {
+    clientId: 'client_id', month: 'month', platform: 'platform', postLink: 'post_link',
+    objective: 'objective', budget: 'budget', startDate: 'start_date', duration: 'duration',
+    assignedTo: 'assigned_to', status: 'status', priority: 'priority', notes: 'notes',
+  };
+  function boostToUpdateRow(data) {
+    const row = {};
+    Object.keys(BOOST_FIELD_MAP).forEach((k) => {
+      if (data[k] === undefined) return;
+      row[BOOST_FIELD_MAP[k]] = (k === 'budget' || k === 'duration') ? Number(data[k]) : data[k];
     });
-    if (!res.ok) throw new Error('Could not save to the Google Sheet backend (HTTP ' + res.status + ')');
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error || 'Unknown error saving to the sheet');
-    state = json.state;
-    lastSyncedAt = Date.now();
-    return json.entity;
+    return row;
   }
 
-  // ---- init / live sync ---------------------------------------------------------
-  async function refresh() {
-    state = await apiGet();
-    lastSyncedAt = Date.now();
-    return clone(state);
+  function archiveFromRow(r) {
+    return {
+      id: r.id,
+      clientId: r.client_id,
+      clientName: r.client_name,
+      month: r.month,
+      monthlyBudget: Number(r.monthly_budget) || 0,
+      allocatedBudget: Number(r.allocated_budget) || 0,
+      remainingBudget: Number(r.remaining_budget) || 0,
+      numBoosts: Number(r.num_boosts) || 0,
+      invoiceStatus: r.invoice_status,
+      invoiceNumber: r.invoice_number || '',
+      invoiceDate: r.invoice_date,
+      boostsSnapshot: (r.boosts_snapshot || []).map(boostFromRow),
+      closedAt: r.closed_at,
+    };
   }
-
-  const init = refresh; // same operation — kept as a separate name for readability at call sites
-
-  function getLastSyncedAt() { return lastSyncedAt; }
 
   // ---- clients ------------------------------------------------------------------
-  function getClients() { return Promise.resolve(clone(state.clients)); }
-
-  function getClient(id) {
-    const c = state.clients.find((c) => c.id === id);
-    return Promise.resolve(c ? clone(c) : null);
+  async function getClients() {
+    const rows = await unwrap(client().from('clients').select('*').order('name'));
+    return rows.map(clientFromRow);
   }
 
-  function addClient(data) { return apiPost('addClient', data); }
-  function updateClient(id, data) { return apiPost('updateClient', Object.assign({ id }, data)); }
-  function deleteClient(id) { return apiPost('deleteClient', { id }); }
+  async function getClient(id) {
+    const { data, error } = await client().from('clients').select('*').eq('id', id).maybeSingle();
+    if (error) throw new Error(error.message);
+    lastSyncedAt = Date.now();
+    return data ? clientFromRow(data) : null;
+  }
 
-  // ---- team members ------------------------------------------------------------
-  function getTeamMembers() { return Promise.resolve(clone(state.teamMembers)); }
-  function addTeamMember(data) { return apiPost('addTeamMember', data); }
-  function updateTeamMember(id, data) { return apiPost('updateTeamMember', Object.assign({ id }, data)); }
-  function deleteTeamMember(id) { return apiPost('deleteTeamMember', { id }); }
+  async function addClient(data) {
+    const row = await unwrap(client().from('clients').insert(clientToInsertRow(data)).select().single());
+    return clientFromRow(row);
+  }
 
-  // ---- boosts ---------------------------------------------------------------------
-  function getBoosts(filter) {
+  async function updateClient(id, data) {
+    const row = await unwrap(client().from('clients').update(clientToUpdateRow(data)).eq('id', id).select().single());
+    return clientFromRow(row);
+  }
+
+  async function deleteClient(id) {
+    // boosts cascade automatically (ON DELETE CASCADE FK); archive rows are
+    // intentionally untouched, they don't reference clients as a foreign key.
+    await unwrap(client().from('clients').delete().eq('id', id));
+    return { id };
+  }
+
+  // ---- team members ---------------------------------------------------------------
+  async function getTeamMembers() {
+    return unwrap(client().from('team_members').select('*').order('name'));
+  }
+
+  async function addTeamMember(data) {
+    return unwrap(client().from('team_members').insert({ name: data.name, color: data.color || '#E7E9EE' }).select().single());
+  }
+
+  async function updateTeamMember(id, data) {
+    const row = {};
+    if (data.name !== undefined) row.name = data.name;
+    if (data.color !== undefined) row.color = data.color;
+    return unwrap(client().from('team_members').update(row).eq('id', id).select().single());
+  }
+
+  async function deleteTeamMember(id) {
+    await unwrap(client().from('team_members').delete().eq('id', id));
+    return { id };
+  }
+
+  // ---- boosts ----------------------------------------------------------------------
+  async function getBoosts(filter) {
     filter = filter || {};
-    let list = state.boosts.slice();
-    if (filter.clientId) list = list.filter((b) => b.clientId === filter.clientId);
-    if (filter.month) list = list.filter((b) => b.month === filter.month);
-    return Promise.resolve(clone(list));
+    let q = client().from('boosts').select('*').order('created_at');
+    if (filter.clientId) q = q.eq('client_id', filter.clientId);
+    if (filter.month) q = q.eq('month', filter.month);
+    const rows = await unwrap(q);
+    return rows.map(boostFromRow);
   }
 
-  function getBoost(id) {
-    const b = state.boosts.find((b) => b.id === id);
-    return Promise.resolve(b ? clone(b) : null);
+  async function getBoost(id) {
+    const { data, error } = await client().from('boosts').select('*').eq('id', id).maybeSingle();
+    if (error) throw new Error(error.message);
+    lastSyncedAt = Date.now();
+    return data ? boostFromRow(data) : null;
   }
 
-  function addBoost(data) { return apiPost('addBoost', data); }
-  function updateBoost(id, data) { return apiPost('updateBoost', Object.assign({ id }, data)); }
-  function deleteBoost(id) { return apiPost('deleteBoost', { id }); }
+  async function addBoost(data) {
+    const row = await unwrap(client().from('boosts').insert(boostToInsertRow(data)).select().single());
+    return boostFromRow(row);
+  }
 
-  // ---- archive ----------------------------------------------------------------------
-  function getArchive(filter) {
+  async function updateBoost(id, data) {
+    const row = await unwrap(client().from('boosts').update(boostToUpdateRow(data)).eq('id', id).select().single());
+    return boostFromRow(row);
+  }
+
+  async function deleteBoost(id) {
+    await unwrap(client().from('boosts').delete().eq('id', id));
+    return { id };
+  }
+
+  // ---- archive -----------------------------------------------------------------------
+  async function getArchive(filter) {
     filter = filter || {};
-    let list = state.archive.slice();
-    if (filter.year) list = list.filter((a) => a.month.startsWith(String(filter.year)));
-    if (filter.month) list = list.filter((a) => a.month === filter.month);
-    if (filter.clientId) list = list.filter((a) => a.clientId === filter.clientId);
-    list.sort((a, b) => (a.month < b.month ? 1 : -1));
-    return Promise.resolve(clone(list));
+    let q = client().from('archive').select('*').order('month', { ascending: false });
+    if (filter.year) q = q.ilike('month', `${filter.year}-%`);
+    if (filter.month) q = q.eq('month', filter.month);
+    if (filter.clientId) q = q.eq('client_id', filter.clientId);
+    const rows = await unwrap(q);
+    return rows.map(archiveFromRow);
   }
 
-  function getArchiveEntry(id) {
-    const a = state.archive.find((a) => a.id === id);
-    return Promise.resolve(a ? clone(a) : null);
+  async function getArchiveEntry(id) {
+    const { data, error } = await client().from('archive').select('*').eq('id', id).maybeSingle();
+    if (error) throw new Error(error.message);
+    lastSyncedAt = Date.now();
+    return data ? archiveFromRow(data) : null;
   }
 
-  function updateArchiveInvoice(id, data) { return apiPost('updateArchiveInvoice', Object.assign({ id }, data)); }
-  function closeMonth() { return apiPost('closeMonth', {}); }
+  async function updateArchiveInvoice(id, data) {
+    const row = {};
+    if (data.invoiceStatus !== undefined) row.invoice_status = data.invoiceStatus;
+    if (data.invoiceNumber !== undefined) row.invoice_number = data.invoiceNumber;
+    if (data.invoiceDate !== undefined) row.invoice_date = data.invoiceDate || null;
+    const updated = await unwrap(client().from('archive').update(row).eq('id', id).select().single());
+    return archiveFromRow(updated);
+  }
 
-  // ---- misc ---------------------------------------------------------------------------
+  async function closeMonth() {
+    await unwrap(client().rpc('close_month'));
+    return { closedAt: Date.now() };
+  }
+
+  // ---- realtime ---------------------------------------------------------------------
+  // Subscribes once to every change on the four tables and calls onChange for
+  // any insert/update/delete anywhere. main.js debounces + re-renders on this.
+  function subscribeToChanges(onChange) {
+    if (!isConfigured() || realtimeChannel) return;
+    realtimeChannel = client()
+      .channel('boost-tracker-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients' }, onChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'team_members' }, onChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'boosts' }, onChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'archive' }, onChange)
+      .subscribe();
+  }
+
+  // ---- misc ----------------------------------------------------------------------------
   function getCurrentMonth() { return currentMonthStr(); }
 
   return {
-    init, refresh, getLastSyncedAt, isConfigured,
+    isConfigured, getLastSyncedAt, subscribeToChanges,
     getClients, getClient, addClient, updateClient, deleteClient,
     getTeamMembers, addTeamMember, updateTeamMember, deleteTeamMember,
     getBoosts, getBoost, addBoost, updateBoost, deleteBoost,

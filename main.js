@@ -1,5 +1,5 @@
 /* ==========================================================================
-   MAIN.JS — app bootstrap, hash router, and live-sync with the Google Sheet
+   MAIN.JS — app bootstrap, hash router, and live-sync with Supabase
    ==========================================================================
    Routes:
      #/dashboard
@@ -10,17 +10,23 @@
      #/client/:clientId/:month   (view a specific — possibly archived — month)
 
    Live sync:
-     - Every route change re-fetches the full dataset from the Sheet first,
-       so navigating around always shows what's really there right now.
-     - A background timer refreshes every 25s so a tab left open on the
-       Dashboard picks up teammates' edits without anyone touching anything.
+     - Every view queries Supabase directly (see db.js) — there's no local
+       cache, so navigating anywhere always shows what's really in the
+       database right now.
+     - A Supabase Realtime subscription listens for ANY change to the four
+       tables and re-renders the current view automatically, so a tab left
+       open picks up teammates' edits within a moment, no polling needed.
+     - A slow (60s) background poll is kept purely as a safety net in case
+       the realtime connection silently drops.
      - The sidebar footer shows sync status + a manual "Refresh now" button.
    ========================================================================== */
 
 (function () {
   const appContent = document.getElementById('app-content');
-  const POLL_INTERVAL_MS = 25000;
+  const SAFETY_POLL_MS = 60000;
+  const REALTIME_DEBOUNCE_MS = 400;
   let pollTimer = null;
+  let realtimeDebounceTimer = null;
 
   function setActiveNav(routeKey) {
     document.querySelectorAll('.nav-item').forEach((a) => {
@@ -62,7 +68,7 @@
     return !!document.querySelector('.modal-overlay:not(.hidden)');
   }
 
-  // ---- top loading bar (feedback for the Sheet round-trip on navigation) -------
+  // ---- top loading bar (feedback for the round-trip on navigation) -------------
   function loadingBarStart() {
     const bar = document.getElementById('route-loading-bar');
     if (!bar) return;
@@ -79,17 +85,17 @@
     setTimeout(() => bar.classList.remove('done'), 500);
   }
 
-  // ---- setup notice (shown when db.js's WEB_APP_URL hasn't been set yet) -------
+  // ---- setup notice (shown when db.js's Supabase config hasn't been set) -------
   function showSetupNotice() {
     document.getElementById('fab-add-boost').style.display = 'none';
     appContent.innerHTML = `
       <div class="setup-notice">
-        <h2>Almost there — connect the Google Sheet</h2>
-        <p>This app is wired to read and write a Google Sheet through an Apps Script Web App, but the connection hasn't been configured yet.</p>
+        <h2>Almost there — connect Supabase</h2>
+        <p>This app reads and writes a Supabase database, but the connection hasn't been configured yet.</p>
         <ol>
           <li>Open <code>SETUP.md</code> in this project for the full walkthrough.</li>
-          <li>Deploy <code>Code.gs</code> on your Google Sheet as a Web App (Execute as "Me", access "Anyone").</li>
-          <li>Copy the deployment URL and paste it into <code>WEB_APP_URL</code> at the top of <code>db.js</code>.</li>
+          <li>Run <code>supabase_schema.sql</code> once in your Supabase project's SQL Editor.</li>
+          <li>Copy your Project URL and anon key from Settings &gt; API and paste them into <code>SUPABASE_URL</code> / <code>SUPABASE_ANON_KEY</code> at the top of <code>db.js</code>.</li>
           <li>Reload this page.</li>
         </ol>
       </div>
@@ -100,35 +106,22 @@
   function showConnectionError(err) {
     appContent.innerHTML = `
       <div class="setup-notice">
-        <h2>Can't reach the Google Sheet right now</h2>
+        <h2>Can't reach Supabase right now</h2>
         <p>${Utils.escapeHtml(err && err.message ? err.message : String(err))}</p>
-        <p>Check that the Apps Script Web App is still deployed with "Anyone" access, and that you have an internet connection, then hit refresh below.</p>
+        <p>Check your internet connection and that the Supabase project is active (Free-tier projects pause after a week of inactivity — reopen the project in your Supabase dashboard to wake it up), then hit refresh below.</p>
       </div>
     `;
     setSyncStatus('error', 'Connection error');
   }
 
   // ---- router -------------------------------------------------------------------
-  async function renderRoute(opts) {
-    opts = opts || {};
+  async function renderRoute() {
     const parts = parseHash();
     const routeKey = parts[0] || 'dashboard';
     setActiveNav(routeKey === 'client' ? '' : routeKey);
 
-    if (opts.skipRefresh !== true) {
-      setSyncStatus('pending', 'Syncing…');
-      loadingBarStart();
-      try {
-        await window.DB.refresh();
-      } catch (err) {
-        loadingBarFinish();
-        if (err && err.message === 'NOT_CONFIGURED') { showSetupNotice(); return; }
-        showConnectionError(err);
-        return;
-      }
-      loadingBarFinish();
-    }
-    setSyncStatus('ok', 'Synced ' + timeAgo(window.DB.getLastSyncedAt()));
+    setSyncStatus('pending', 'Syncing…');
+    loadingBarStart();
 
     try {
       switch (routeKey) {
@@ -139,28 +132,29 @@
         case 'client': await window.Views.clientDetail(appContent, parts[1], parts[2]); break;
         default: await window.Views.dashboard(appContent);
       }
-    } catch (err) {
-      console.error('Failed to render route', routeKey, err);
-      appContent.innerHTML = `<div class="empty-state"><p>Something went wrong loading this page.</p></div>`;
-    }
-  }
-
-  // ---- background polling + manual refresh --------------------------------------
-  async function backgroundRefresh() {
-    if (!window.DB.isConfigured()) return; // setup notice is already showing; nothing to poll yet
-    if (isAnyModalOpen()) return; // don't yank the rug out from under an open form
-    try {
-      await window.DB.refresh();
       setSyncStatus('ok', 'Synced ' + timeAgo(window.DB.getLastSyncedAt()));
-      await renderRoute({ skipRefresh: true });
     } catch (err) {
-      setSyncStatus('error', 'Connection error');
+      if (err && err.message === 'NOT_CONFIGURED') { showSetupNotice(); return; }
+      console.error('Failed to render route', routeKey, err);
+      showConnectionError(err);
+      return;
+    } finally {
+      loadingBarFinish();
     }
   }
 
-  function startPolling() {
+  // ---- realtime + safety-net polling --------------------------------------------
+  function onRemoteChange() {
+    if (isAnyModalOpen()) return; // don't yank the rug out from under an open form
+    clearTimeout(realtimeDebounceTimer);
+    realtimeDebounceTimer = setTimeout(() => { renderRoute(); }, REALTIME_DEBOUNCE_MS);
+  }
+
+  function startSafetyPoll() {
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(backgroundRefresh, POLL_INTERVAL_MS);
+    pollTimer = setInterval(() => {
+      if (window.DB.isConfigured() && !isAnyModalOpen()) renderRoute();
+    }, SAFETY_POLL_MS);
     setInterval(refreshSyncLabel, 5000);
   }
 
@@ -180,8 +174,8 @@
     Modals.init();
     bindSyncButton();
 
-    window.Router = { rerender: () => renderRoute({ skipRefresh: true }) };
-    window.addEventListener('hashchange', () => renderRoute());
+    window.Router = { rerender: renderRoute };
+    window.addEventListener('hashchange', renderRoute);
 
     if (!window.location.hash || window.location.hash === '#') {
       window.location.hash = '#/dashboard';
@@ -189,7 +183,8 @@
       await renderRoute();
     }
 
-    startPolling();
+    if (window.DB.isConfigured()) window.DB.subscribeToChanges(onRemoteChange);
+    startSafetyPoll();
   }
 
   document.addEventListener('DOMContentLoaded', start);
