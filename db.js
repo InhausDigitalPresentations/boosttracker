@@ -21,8 +21,8 @@
 window.DB = (function () {
   // ⚠️ SET THESE after creating your Supabase project — see SETUP.md.
   // Find them in your project: Settings > API.
-  const SUPABASE_URL = 'PASTE_YOUR_SUPABASE_PROJECT_URL_HERE';
-  const SUPABASE_ANON_KEY = 'PASTE_YOUR_SUPABASE_ANON_KEY_HERE';
+  const SUPABASE_URL = 'https://vxdtewpyumcfovcwhujr.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ4ZHRld3B5dW1jZm92Y3dodWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3ODIzNDQsImV4cCI6MjA5OTM1ODM0NH0.wqvCSH6sIUfABNXL99q4tfTIxsYMNkdKykTJrhOJCZ4';
 
   let sb = null;
   let lastSyncedAt = null;
