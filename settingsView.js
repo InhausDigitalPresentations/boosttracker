@@ -11,18 +11,16 @@ window.Views.settings = async function (container) {
     <div class="page-header">
       <div>
         <h1 class="page-title">Settings</h1>
-        <p class="page-subtitle">Manage the team members boosts can be assigned to</p>
-      </div>
-      <div class="page-header-actions">
-        <button class="btn btn-primary" id="add-team-member-btn">+ Add Team Member</button>
+        <p class="page-subtitle">Everyone who has logged in with an @inhaus.ae account — boosts can be assigned to any of them</p>
       </div>
     </div>
 
     <div class="section-heading">Team Members</div>
 
     <div class="team-grid" id="team-grid">
-      ${teamMembers.length ? teamMembers.map(teamMemberCard).join('') : `<div class="empty-state"><p>No team members yet.</p></div>`}
+      ${teamMembers.length ? teamMembers.map(teamMemberCard).join('') : `<div class="empty-state"><p>Nobody has logged in yet.</p></div>`}
     </div>
+    <p class="text-muted" style="margin-top:8px;">To add someone, have them sign up on the login screen with their @inhaus.ae email — they'll appear here automatically. To remove someone's access, delete their account from the Supabase dashboard (Authentication &gt; Users).</p>
 
     <div class="section-heading" style="margin-top:32px;">About</div>
     <div class="detail-summary-card">
@@ -32,24 +30,11 @@ window.Views.settings = async function (container) {
 
   document.getElementById('fab-add-boost').style.display = 'none';
 
-  container.querySelector('#add-team-member-btn').addEventListener('click', () => {
-    Modals.openTeamModal(null);
-  });
-
   container.querySelectorAll('[data-action="edit-member"]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const members = await DB.getTeamMembers();
       const member = members.find((m) => m.id === btn.dataset.id);
       Modals.openTeamModal(member);
-    });
-  });
-
-  container.querySelectorAll('[data-action="delete-member"]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      if (!confirm('Remove this team member? Existing boosts keep their assignment history but will show as unassigned.')) return;
-      await DB.deleteTeamMember(btn.dataset.id);
-      Utils.toast('Team member removed');
-      window.Router.rerender();
     });
   });
 };
@@ -58,10 +43,12 @@ function teamMemberCard(member) {
   return `
     <div class="team-card">
       <span class="avatar" style="background:${member.color}">${Utils.initials(member.name)}</span>
-      <span class="team-card-name">${Utils.escapeHtml(member.name)}</span>
+      <div class="team-card-info">
+        <span class="team-card-name">${Utils.escapeHtml(member.name)}</span>
+        <span class="team-card-email text-muted">${Utils.escapeHtml(member.email || '')}</span>
+      </div>
       <div class="team-card-actions">
         <button class="btn-icon" data-action="edit-member" data-id="${member.id}" title="Edit">✎</button>
-        <button class="btn-icon danger" data-action="delete-member" data-id="${member.id}" title="Remove">🗑</button>
       </div>
     </div>
   `;

@@ -184,12 +184,13 @@ window.DB = (function () {
   }
 
   // ---- team members ---------------------------------------------------------------
+  // Rows here are created automatically when someone signs up with an
+  // @inhaus.ae account (see the on_auth_user_created trigger in
+  // supabase_schema.sql) — there is no addTeamMember/deleteTeamMember
+  // anymore. updateTeamMember still exists so people can fix their
+  // auto-generated display name or pick a different avatar color.
   async function getTeamMembers() {
     return unwrap(client().from('team_members').select('*').order('name'));
-  }
-
-  async function addTeamMember(data) {
-    return unwrap(client().from('team_members').insert({ name: data.name, color: data.color || '#E7E9EE' }).select().single());
   }
 
   async function updateTeamMember(id, data) {
@@ -197,11 +198,6 @@ window.DB = (function () {
     if (data.name !== undefined) row.name = data.name;
     if (data.color !== undefined) row.color = data.color;
     return unwrap(client().from('team_members').update(row).eq('id', id).select().single());
-  }
-
-  async function deleteTeamMember(id) {
-    await unwrap(client().from('team_members').delete().eq('id', id));
-    return { id };
   }
 
   // ---- boosts ----------------------------------------------------------------------
@@ -295,7 +291,7 @@ window.DB = (function () {
   return {
     isConfigured, getLastSyncedAt, subscribeToChanges, unsubscribeFromChanges, getRawClient,
     getClients, getClient, addClient, updateClient, deleteClient,
-    getTeamMembers, addTeamMember, updateTeamMember, deleteTeamMember,
+    getTeamMembers, updateTeamMember,
     getBoosts, getBoost, addBoost, updateBoost, deleteBoost,
     getArchive, getArchiveEntry, updateArchiveInvoice, closeMonth,
     getCurrentMonth, nextMonthStr,

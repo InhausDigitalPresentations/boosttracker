@@ -723,8 +723,10 @@ body:not(.is-authenticated) .sidebar-nav { display: none; }
   padding: 14px 16px;
 }
 
-.team-card .avatar { width: 34px; height: 34px; font-size: 13px; }
-.team-card-name { font-weight: 600; flex: 1; }
+.team-card .avatar { width: 34px; height: 34px; font-size: 13px; flex-shrink: 0; }
+.team-card-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.team-card-name { font-weight: 600; }
+.team-card-email { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .team-card-actions { display: flex; gap: 2px; }
 
 .color-swatches { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }

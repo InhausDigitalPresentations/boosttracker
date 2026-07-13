@@ -175,11 +175,17 @@ window.Modals = (function () {
   }
 
   // ---- TEAM MEMBER MODAL --------------------------------------------------------
+  // Edit-only: team members are created automatically when someone signs up
+  // with an @inhaus.ae account (see supabase_schema.sql), so this modal is
+  // never opened in "add" mode anymore — just lets someone fix their
+  // auto-generated display name or pick a different avatar color.
   function openTeamModal(member) {
-    document.getElementById('team-modal-title').textContent = member ? 'Edit Team Member' : 'Add Team Member';
-    document.getElementById('team-id').value = member ? member.id : '';
-    document.getElementById('team-name').value = member ? member.name : '';
-    const chosenColor = member ? member.color : TEAM_COLORS[0];
+    if (!member) return;
+    document.getElementById('team-modal-title').textContent = 'Edit Team Member';
+    document.getElementById('team-id').value = member.id;
+    document.getElementById('team-name').value = member.name;
+    document.getElementById('team-email-display').textContent = member.email || '';
+    const chosenColor = member.color || TEAM_COLORS[0];
     document.getElementById('team-color').value = chosenColor;
 
     const swatchContainer = document.getElementById('team-color-swatches');
@@ -209,13 +215,8 @@ window.Modals = (function () {
         color: document.getElementById('team-color').value,
       };
 
-      if (id) {
-        await DB.updateTeamMember(id, data);
-        Utils.toast('Team member updated');
-      } else {
-        await DB.addTeamMember(data);
-        Utils.toast('Team member added');
-      }
+      await DB.updateTeamMember(id, data);
+      Utils.toast('Team member updated');
 
       hide('team-modal');
       window.Router.rerender();
