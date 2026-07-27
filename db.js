@@ -102,6 +102,7 @@ window.DB = (function () {
       status: r.status,
       priority: r.priority,
       notes: r.notes || '',
+      createdBy: r.created_by,
       createdAt: r.created_at,
     };
   }
@@ -120,6 +121,22 @@ window.DB = (function () {
       priority: data.priority || 'Normal',
       notes: data.notes || '',
     };
+  }
+
+  // Looks up the team_members row for whoever is currently logged in, so
+  // addBoost() can stamp new boosts with who created them — without
+  // requiring any change to the "Add Boost" form itself. Used only for
+  // notifications (see notify_boost_assignment() in supabase_schema.sql);
+  // never shown or editable in the UI.
+  async function getCurrentTeamMemberId() {
+    try {
+      const { data: { session } } = await client().auth.getSession();
+      if (!session) return null;
+      const { data } = await client().from('team_members').select('id').eq('user_id', session.user.id).maybeSingle();
+      return data ? data.id : null;
+    } catch (e) {
+      return null;
+    }
   }
   const BOOST_FIELD_MAP = {
     clientId: 'client_id', month: 'month', platform: 'platform', postLink: 'post_link',
@@ -218,7 +235,9 @@ window.DB = (function () {
   }
 
   async function addBoost(data) {
-    const row = await unwrap(client().from('boosts').insert(boostToInsertRow(data)).select().single());
+    const insertRow = boostToInsertRow(data);
+    insertRow.created_by = await getCurrentTeamMemberId();
+    const row = await unwrap(client().from('boosts').insert(insertRow).select().single());
     return boostFromRow(row);
   }
 
